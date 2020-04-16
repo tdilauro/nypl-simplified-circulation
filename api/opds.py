@@ -19,6 +19,7 @@ from core.external_search import WorkSearchResult
 from core.opds import (
     Annotator,
     AcquisitionFeed,
+    AvailableNowWorkUnavailable,
     UnfulfillableWork,
 )
 from core.util.flask_util import OPDSFeedResponse
@@ -297,11 +298,21 @@ class CirculationManagerAnnotator(Annotator):
 
             # Generate the licensing tags that tell you whether the book
             # is available.
+            availability_tag = "{%s}availability" % feed.nsmap[u"opds"]
+            unavailable_status = {"status": "unavailable"}
             for link in borrow_links:
                 if link is not None:
                     for t in feed.license_tags(
                         active_license_pool, active_loan, active_hold
                     ):
+                        if hasattr(self.facets, "availability") and \
+                                self.facets.availability != self.facets.AVAILABLE_ALL and \
+                                t.tag == availability_tag and t.attrib == unavailable_status:
+                            # An unavailable work is about to be presented to the client, even though
+                            # the client has asked -- via availability facet -- for only available items.
+                            # Don't propagate the associated <entry> to the client.
+                            raise AvailableNowWorkUnavailable()
+
                         link.append(t)
 
         # Add links for fulfilling an active loan.
