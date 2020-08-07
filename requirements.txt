@@ -66,7 +66,7 @@ fuzzywuzzy
 python-Levenshtein
 
 # For SAML authentication
-python-saml
+python3-saml
 isodate
 defusedxml
 xmlsec
