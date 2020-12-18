@@ -1020,6 +1020,9 @@ class DashboardController(AdminCirculationManagerController):
 
         total_title_count = 0
         total_license_count = 0
+        total_enumerated_license_title_count = 0
+        total_unlimited_license_title_count = 0
+        total_open_access_title_count = 0
         total_available_license_count = 0
 
         collection_counts = dict()
@@ -1027,13 +1030,25 @@ class DashboardController(AdminCirculationManagerController):
             if not flask.request.admin or not flask.request.admin.can_see_collection(collection):
                 continue
 
-            licensed_title_count = self._db.query(
+            enumerated_license_title_count = self._db.query(
                 LicensePool
             ).filter(
                 LicensePool.collection_id == collection.id
             ).filter(
                 and_(
                     LicensePool.licenses_owned > 0,
+                    LicensePool.unlimited_access == False,
+                    LicensePool.open_access == False,
+                )
+            ).count()
+
+            unlimited_license_title_count = self._db.query(
+                LicensePool
+            ).filter(
+                LicensePool.collection_id == collection.id
+            ).filter(
+                and_(
+                    LicensePool.unlimited_access == True,
                     LicensePool.open_access == False,
                 )
             ).count()
@@ -1054,6 +1069,9 @@ class DashboardController(AdminCirculationManagerController):
             ).filter(
                 LicensePool.collection_id == collection.id
             ).filter(
+                # sum only the enumerated (not unlimited) licenses
+                LicensePool.licenses_owned > 0,
+                LicensePool.unlimited_access == False,
                 LicensePool.open_access == False,
             ).all()[0][0] or 0
 
@@ -1062,15 +1080,22 @@ class DashboardController(AdminCirculationManagerController):
             ).filter(
                 LicensePool.collection_id == collection.id
             ).filter(
+                # sum only enumerated (not unlimited) licenses
+                LicensePool.licenses_owned > 0,
                 LicensePool.open_access == False,
             ).all()[0][0] or 0
 
-            total_title_count += licensed_title_count + open_title_count
+            total_title_count += enumerated_license_title_count + unlimited_license_title_count + open_title_count
+            total_enumerated_license_title_count += enumerated_license_title_count
+            total_unlimited_license_title_count += unlimited_license_title_count
+            total_open_access_title_count += open_title_count
             total_license_count += license_count
             total_available_license_count += available_license_count
 
             collection_counts[collection.name] = dict(
-                licensed_titles=licensed_title_count,
+                licensed_titles=enumerated_license_title_count+unlimited_license_title_count,
+                enumerated_license_titles=enumerated_license_title_count,
+                unlimited_license_titles=unlimited_license_title_count,
                 open_access_titles=open_title_count,
                 licenses=license_count,
                 available_licenses=available_license_count,
@@ -1151,17 +1176,10 @@ class DashboardController(AdminCirculationManagerController):
                 Patron.library_id == library.id
             ).count()
 
-            title_count = 0
-            license_count = 0
-            available_license_count = 0
-
-            library_collection_counts = dict()
-            for collection in library.all_collections:
-                counts = collection_counts[collection.name]
-                library_collection_counts[collection.name] = counts
-                title_count += counts.get("licensed_titles", 0) + counts.get("open_access_titles", 0)
-                license_count += counts.get("licenses", 0)
-                available_license_count += counts.get("available_licenses", 0)
+            library_collection_counts = {c.name: collection_counts[c.name] for c in library.all_collections}
+            library_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
+                                                         for k in set(x.keys() + y.keys())),
+                                       library_collection_counts.values(), {})
 
             library_stats[library.short_name] = dict(
                 patrons=dict(
@@ -1172,9 +1190,14 @@ class DashboardController(AdminCirculationManagerController):
                     holds=hold_count,
                 ),
                 inventory=dict(
-                    titles=title_count,
-                    licenses=license_count,
-                    available_licenses=available_license_count,
+                    titles=library_inventory.get('enumerated_license_titles', 0) +
+                           library_inventory.get('unlimited_license_titles', 0) +
+                           library_inventory.get('open_access_titles', 0),
+                    enumerated_license_titles=library_inventory.get('enumerated_license_titles', 0),
+                    unlimited_license_titles=library_inventory.get('unlimited_license_titles', 0),
+                    open_access_titles=library_inventory.get('open_access_titles', 0),
+                    licenses=library_inventory.get('licenses', 0),
+                    available_licenses=library_inventory.get('available_licenses', 0),
                 ),
                 collections=library_collection_counts,
             )
@@ -1208,6 +1231,9 @@ class DashboardController(AdminCirculationManagerController):
             ),
             inventory=dict(
                 titles=total_title_count,
+                enumerated_license_titles=total_enumerated_license_title_count,
+                unlimited_license_titles=total_unlimited_license_title_count,
+                open_access_titles=total_open_access_title_count,
                 licenses=total_license_count,
                 available_licenses=total_available_license_count,
             ),
