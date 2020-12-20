@@ -1015,97 +1015,75 @@ class LanesController(AdminCirculationManagerController):
 
 class DashboardController(AdminCirculationManagerController):
 
+    def _gather_collection_stats(self, collection):
+        collection_license_pools_filter = LicensePool.collection_id == collection.id
+
+        enumerated_license_filter = and_(
+            LicensePool.licenses_owned > 0,
+            LicensePool.unlimited_access == False,
+            LicensePool.open_access == False,
+        )
+        unlimited_license_filter = and_(
+            LicensePool.unlimited_access == True,
+            LicensePool.open_access == False,
+        )
+        open_access_filter = LicensePool.open_access == True
+
+        def _count(query_filter):
+            result = self._db.query(
+                LicensePool
+            ).filter(
+                collection_license_pools_filter
+            ).filter(
+                query_filter
+            ).count()
+            return result
+
+        enumerated_license_title_count = _count(enumerated_license_filter)
+        unlimited_license_title_count = _count(unlimited_license_filter)
+        open_access_title_count = _count(open_access_filter)
+
+        licenses_owned_count, licenses_available_count = map(
+            lambda x: x if x is not None else 0,
+            self._db.query(
+                func.sum(LicensePool.licenses_owned),
+                func.sum(LicensePool.licenses_available),
+            ).filter(
+                collection_license_pools_filter
+            ).filter(
+                enumerated_license_filter
+            ).all()[0]
+        )
+
+        return dict(
+            titles=enumerated_license_title_count + unlimited_license_title_count + open_access_title_count,
+            self_hosted_titles=self_hosted_title_count,
+            open_access_titles=open_access_title_count,
+            licensed_titles=enumerated_license_title_count + unlimited_license_title_count,
+            unlimited_license_titles=unlimited_license_title_count,
+            enumerated_license_titles=enumerated_license_title_count,
+            licenses=licenses_owned_count,
+            available_licenses=licenses_available_count,
+        )
+
     def stats(self):
+        collection_counts = {c.name: self._gather_collection_stats(c) for c in self._db.query(Collection)
+                             if flask.request.admin or flask.request.admin.can_see_collection(c)}
+        collection_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
+                                                        for k in set(x.keys() + y.keys())),
+                                      collection_counts.values(), {})
+
         library_stats = {}
-
-        total_title_count = 0
-        total_license_count = 0
-        total_enumerated_license_title_count = 0
-        total_unlimited_license_title_count = 0
-        total_open_access_title_count = 0
-        total_available_license_count = 0
-
-        collection_counts = dict()
-        for collection in self._db.query(Collection):
-            if not flask.request.admin or not flask.request.admin.can_see_collection(collection):
-                continue
-
-            enumerated_license_title_count = self._db.query(
-                LicensePool
-            ).filter(
-                LicensePool.collection_id == collection.id
-            ).filter(
-                and_(
-                    LicensePool.licenses_owned > 0,
-                    LicensePool.unlimited_access == False,
-                    LicensePool.open_access == False,
-                )
-            ).count()
-
-            unlimited_license_title_count = self._db.query(
-                LicensePool
-            ).filter(
-                LicensePool.collection_id == collection.id
-            ).filter(
-                and_(
-                    LicensePool.unlimited_access == True,
-                    LicensePool.open_access == False,
-                )
-            ).count()
-
-            open_title_count = self._db.query(
-                LicensePool
-            ).filter(
-                LicensePool.collection_id == collection.id
-            ).filter(
-                LicensePool.open_access == True
-            ).count()
-
-            # The sum queries return None instead of 0 if there are
-            # no license pools in the db.
-
-            license_count = self._db.query(
-                func.sum(LicensePool.licenses_owned)
-            ).filter(
-                LicensePool.collection_id == collection.id
-            ).filter(
-                # sum only the enumerated (not unlimited) licenses
-                LicensePool.licenses_owned > 0,
-                LicensePool.unlimited_access == False,
-                LicensePool.open_access == False,
-            ).all()[0][0] or 0
-
-            available_license_count = self._db.query(
-                func.sum(LicensePool.licenses_available)
-            ).filter(
-                LicensePool.collection_id == collection.id
-            ).filter(
-                # sum only enumerated (not unlimited) licenses
-                LicensePool.licenses_owned > 0,
-                LicensePool.open_access == False,
-            ).all()[0][0] or 0
-
-            total_title_count += enumerated_license_title_count + unlimited_license_title_count + open_title_count
-            total_enumerated_license_title_count += enumerated_license_title_count
-            total_unlimited_license_title_count += unlimited_license_title_count
-            total_open_access_title_count += open_title_count
-            total_license_count += license_count
-            total_available_license_count += available_license_count
-
-            collection_counts[collection.name] = dict(
-                licensed_titles=enumerated_license_title_count+unlimited_license_title_count,
-                enumerated_license_titles=enumerated_license_title_count,
-                unlimited_license_titles=unlimited_license_title_count,
-                open_access_titles=open_title_count,
-                licenses=license_count,
-                available_licenses=available_license_count,
-            )
-
-
         for library in self._db.query(Library):
             # Only include libraries this admin has librarian access to.
             if not flask.request.admin or not flask.request.admin.is_librarian(library):
                 continue
+
+            library_collection_counts = {c.name: collection_counts[c.name] for c in library.all_collections
+                                         if c.name in collection_counts}
+            library_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
+                                                         for k in set(x.keys() + y.keys())),
+                                       library_collection_counts.values(), {})
 
             patron_count = self._db.query(Patron).filter(Patron.library_id==library.id).count()
 
@@ -1176,11 +1154,6 @@ class DashboardController(AdminCirculationManagerController):
                 Patron.library_id == library.id
             ).count()
 
-            library_collection_counts = {c.name: collection_counts[c.name] for c in library.all_collections}
-            library_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
-                                                         for k in set(x.keys() + y.keys())),
-                                       library_collection_counts.values(), {})
-
             library_stats[library.short_name] = dict(
                 patrons=dict(
                     total=patron_count,
@@ -1189,16 +1162,7 @@ class DashboardController(AdminCirculationManagerController):
                     loans=loan_count,
                     holds=hold_count,
                 ),
-                inventory=dict(
-                    titles=library_inventory.get('enumerated_license_titles', 0) +
-                           library_inventory.get('unlimited_license_titles', 0) +
-                           library_inventory.get('open_access_titles', 0),
-                    enumerated_license_titles=library_inventory.get('enumerated_license_titles', 0),
-                    unlimited_license_titles=library_inventory.get('unlimited_license_titles', 0),
-                    open_access_titles=library_inventory.get('open_access_titles', 0),
-                    licenses=library_inventory.get('licenses', 0),
-                    available_licenses=library_inventory.get('available_licenses', 0),
-                ),
+                inventory=library_inventory,
                 collections=library_collection_counts,
             )
 
@@ -1229,14 +1193,7 @@ class DashboardController(AdminCirculationManagerController):
                 loans=total_loans,
                 holds=total_holds,
             ),
-            inventory=dict(
-                titles=total_title_count,
-                enumerated_license_titles=total_enumerated_license_title_count,
-                unlimited_license_titles=total_unlimited_license_title_count,
-                open_access_titles=total_open_access_title_count,
-                licenses=total_license_count,
-                available_licenses=total_available_license_count,
-            ),
+            inventory=collection_inventory,
             collections=collection_counts,
         )
 
