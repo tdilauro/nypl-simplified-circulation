@@ -1028,6 +1028,7 @@ class DashboardController(AdminCirculationManagerController):
             LicensePool.open_access == False,
         )
         open_access_filter = LicensePool.open_access == True
+        self_hosted_filter = LicensePool.self_hosted == True
 
         def _count(query_filter):
             result = self._db.query(
@@ -1042,6 +1043,7 @@ class DashboardController(AdminCirculationManagerController):
         enumerated_license_title_count = _count(enumerated_license_filter)
         unlimited_license_title_count = _count(unlimited_license_filter)
         open_access_title_count = _count(open_access_filter)
+        self_hosted_title_count = _count(self_hosted_filter)
 
         licenses_owned_count, licenses_available_count = map(
             lambda x: x if x is not None else 0,
@@ -1068,7 +1070,7 @@ class DashboardController(AdminCirculationManagerController):
 
     def stats(self):
         collection_counts = {c.name: self._gather_collection_stats(c) for c in self._db.query(Collection)
-                             if flask.request.admin or flask.request.admin.can_see_collection(c)}
+                             if flask.request.admin and flask.request.admin.can_see_collection(c)}
         collection_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
                                                         for k in set(x.keys() + y.keys())),
                                       collection_counts.values(), {})
