@@ -1068,6 +1068,83 @@ class DashboardController(AdminCirculationManagerController):
             available_licenses=licenses_available_count,
         )
 
+    def _gather_patron_stats(self, library):
+        patron_count = self._db.query(Patron).filter(Patron.library_id == library.id).count()
+
+        active_loans_patron_count = self._db.query(
+            distinct(Patron.id)
+        ).join(
+            Patron.loans
+        ).filter(
+            Loan.end >= datetime.now(),
+        ).filter(
+            Patron.library_id == library.id
+        ).count()
+
+        active_patrons = select(
+            [Patron.id]
+        ).select_from(
+            join(
+                Loan,
+                Patron,
+                and_(
+                    Patron.id == Loan.patron_id,
+                    Patron.library_id == library.id,
+                    Loan.id != None,
+                    Loan.end >= datetime.now()
+                )
+            )
+        ).union(
+            select(
+                [Patron.id]
+            ).select_from(
+                join(
+                    Hold,
+                    Patron,
+                    and_(
+                        Patron.id == Hold.patron_id,
+                        Patron.library_id == library.id,
+                        Hold.id != None,
+                    )
+                )
+            )
+        ).alias()
+
+        active_loans_or_holds_patron_count_query = select(
+            [func.count(distinct(active_patrons.c.id))]
+        ).select_from(
+            active_patrons
+        )
+
+        result = self._db.execute(active_loans_or_holds_patron_count_query)
+        active_loans_or_holds_patron_count = [r[0] for r in result][0]
+
+        loan_count = self._db.query(
+            Loan
+        ).join(
+            Loan.patron
+        ).filter(
+            Patron.library_id == library.id
+        ).filter(
+            Loan.end >= datetime.now()
+        ).count()
+
+        hold_count = self._db.query(
+            Hold
+        ).join(
+            Hold.patron
+        ).filter(
+            Patron.library_id == library.id
+        ).count()
+
+        return dict(
+            total=patron_count,
+            with_active_loans=active_loans_patron_count,
+            with_active_loans_or_holds=active_loans_or_holds_patron_count,
+            loans=loan_count,
+            holds=hold_count,
+        )
+
     def stats(self):
         collection_counts = {c.name: self._gather_collection_stats(c) for c in self._db.query(Collection)
                              if flask.request.admin and flask.request.admin.can_see_collection(c)}
@@ -1087,83 +1164,10 @@ class DashboardController(AdminCirculationManagerController):
                                                          for k in set(x.keys() + y.keys())),
                                        library_collection_counts.values(), {})
 
-            patron_count = self._db.query(Patron).filter(Patron.library_id==library.id).count()
-
-            active_loans_patron_count = self._db.query(
-                distinct(Patron.id)
-            ).join(
-                Patron.loans
-            ).filter(
-                Loan.end >= datetime.now(),
-            ).filter(
-                Patron.library_id == library.id
-            ).count()
-
-            active_patrons = select(
-                [Patron.id]
-            ).select_from(
-                join(
-                    Loan,
-                    Patron,
-                    and_(
-                        Patron.id == Loan.patron_id,
-                        Patron.library_id == library.id,
-                        Loan.id != None,
-                        Loan.end >= datetime.now()
-                    )
-                )
-            ).union(
-                select(
-                    [Patron.id]
-                ).select_from(
-                    join(
-                        Hold,
-                        Patron,
-                        and_(
-                            Patron.id == Hold.patron_id,
-                            Patron.library_id == library.id,
-                            Hold.id != None,
-                        )
-                    )
-                )
-            ).alias()
-
-
-            active_loans_or_holds_patron_count_query = select(
-                [func.count(distinct(active_patrons.c.id))]
-            ).select_from(
-                active_patrons
-            )
-
-            result = self._db.execute(active_loans_or_holds_patron_count_query)
-            active_loans_or_holds_patron_count = [r[0] for r in result][0]
-
-            loan_count = self._db.query(
-                Loan
-            ).join(
-                Loan.patron
-            ).filter(
-                Patron.library_id == library.id
-            ).filter(
-                Loan.end >= datetime.now()
-            ).count()
-
-            hold_count = self._db.query(
-                Hold
-            ).join(
-                Hold.patron
-            ).filter(
-                Patron.library_id == library.id
-            ).count()
+            patrons = self._gather_patron_stats(library)
 
             library_stats[library.short_name] = dict(
-                patrons=dict(
-                    total=patron_count,
-                    with_active_loans=active_loans_patron_count,
-                    with_active_loans_or_holds=active_loans_or_holds_patron_count,
-                    loans=loan_count,
-                    holds=hold_count,
-                ),
+                patrons=patrons,
                 inventory=library_inventory,
                 collections=library_collection_counts,
             )
