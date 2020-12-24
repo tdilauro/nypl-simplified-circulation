@@ -1145,62 +1145,60 @@ class DashboardController(AdminCirculationManagerController):
             holds=hold_count,
         )
 
+    @staticmethod
+    def _compute_totals(statistics, initial_values=None):
+        """Total up values for each key for the dictionaries in the `statistics` list.
+
+        An additional dictionary with initial values may be provided.
+
+        :param statistics: A list of dictionaries, each with a key named
+            for a property and a number representing its value.
+        :type statistics: List[dict[str, int]]
+
+        :param initial_values: A dictionary like the ones in the statistics list.
+        :type initial_values: Optional[dict[str, int]]
+
+        :return: Dictionary with the same property keys and the sum of each of the
+            respective values for that property.
+        :rtype: dict[str, int]
+        """
+
+        initial_values = initial_values or {}
+        return reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
+                                        for k in set(x.keys() + y.keys())),
+                      statistics, initial_values)
+
+    def _gather_library_stats(self, library, collection_counts):
+        library_collection_counts = {c.name: collection_counts[c.name] for c in library.all_collections
+                                     if c.name in collection_counts}
+        library_inventory = self._compute_totals(library_collection_counts.values())
+
+        patrons = self._gather_patron_stats(library)
+
+        return dict(
+            patrons=patrons,
+            inventory=library_inventory,
+            collections=library_collection_counts,
+        )
+
     def stats(self):
-        collection_counts = {c.name: self._gather_collection_stats(c) for c in self._db.query(Collection)
-                             if flask.request.admin and flask.request.admin.can_see_collection(c)}
-        collection_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
-                                                        for k in set(x.keys() + y.keys())),
-                                      collection_counts.values(), {})
+        # Gather statistics for collections to which this admin has collection access.
+        collection_stats = {c.name: self._gather_collection_stats(c) for c in self._db.query(Collection)
+                            if flask.request.admin and flask.request.admin.can_see_collection(c)}
+        collection_inventory = self._compute_totals(collection_stats.values())
 
-        library_stats = {}
-        for library in self._db.query(Library):
-            # Only include libraries this admin has librarian access to.
-            if not flask.request.admin or not flask.request.admin.is_librarian(library):
-                continue
+        # Gather statistics for libraries to which this admin has librarian access.
+        library_stats = {l.short_name: self._gather_library_stats(l, collection_stats)
+                         for l in self._db.query(Library)
+                         if flask.request.admin and flask.request.admin.is_librarian(l)}
 
-            library_collection_counts = {c.name: collection_counts[c.name] for c in library.all_collections
-                                         if c.name in collection_counts}
-            library_inventory = reduce(lambda x, y: dict((k, x.get(k, 0) + y.get(k, 0))
-                                                         for k in set(x.keys() + y.keys())),
-                                       library_collection_counts.values(), {})
-
-            patrons = self._gather_patron_stats(library)
-
-            library_stats[library.short_name] = dict(
-                patrons=patrons,
-                inventory=library_inventory,
-                collections=library_collection_counts,
-            )
-
-        total_patrons = sum([
-            stats.get("patrons", {}).get("total", 0)
-            for stats in library_stats.values()])
-        total_with_active_loans = sum([
-            stats.get("patrons", {}).get("with_active_loans", 0)
-            for stats in library_stats.values()])
-        total_with_active_loans_or_holds = sum([
-            stats.get("patrons", {}).get("with_active_loans_or_holds", 0)
-            for stats in library_stats.values()])
-
-        # TODO: show shared collection loans and holds for libraries outside this
-        # circ manager?
-        total_loans = sum([
-            stats.get("patrons", {}).get("loans", 0)
-            for stats in library_stats.values()])
-        total_holds = sum([
-            stats.get("patrons", {}).get("holds", 0)
-            for stats in library_stats.values()])
+        patron_stats = {name: library_stats[name]["patrons"] for name in library_stats.keys()}
+        patron_totals = self._compute_totals(patron_stats.values())
 
         library_stats["total"] = dict(
-            patrons=dict(
-                total=total_patrons,
-                with_active_loans=total_with_active_loans,
-                with_active_loans_or_holds=total_with_active_loans_or_holds,
-                loans=total_loans,
-                holds=total_holds,
-            ),
+            patrons=patron_totals,
             inventory=collection_inventory,
-            collections=collection_counts,
+            collections=collection_stats,
         )
 
         return library_stats
